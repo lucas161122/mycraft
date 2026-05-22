@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Craft Game Prototype</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="game"></canvas>
+      <div class="hud">
+        <div class="stats">
+          <span id="block-label">草方块</span>
+          <span id="position-label">0, 0, 0</span>
+        </div>
+        <div class="escape-note">要退出游戏，请按两次ESC。</div>
+        <div class="crosshair" aria-hidden="true"></div>
+        <div id="hotbar" class="hotbar" aria-label="方块快捷栏"></div>
+      </div>
+      <div id="auto-jump-panel" class="auto-jump-panel">
+        <button id="auto-jump-toggle" class="auto-jump-toggle" type="button" disabled>
+          <span>自动跳跃</span>
+          <span>将会在以后更新</span>
+        </button>
+      </div>
+      <section id="start-panel" class="start-panel">
+        <div class="brand">
+          <span class="brand-mark"></span>
+          <span>Voxel First Day</span>
+        </div>
+        <h1>体素沙盒原型</h1>
+        <p>探索一座程序生成的小岛，挖掉方块，放上自己设计的体素材质。</p>
+        <div class="menu-actions">
+          <button id="start-button" type="button">进入世界</button>
+          <button id="quit-button" class="secondary hidden" type="button">2退出游戏</button>
+        </div>
+        <div class="controls">
+          <span>WASD 移动</span>
+          <span>空格跳跃</span>
+          <span>左键挖掘</span>
+          <span>右键放置</span>
+          <span>1-7 选方块</span>
+        </div>
+        <span class="version-label">TEST 0.8</span>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
