@@ -31,7 +31,7 @@ const html = `<!doctype html>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Craft Game Prototype</title>
+    <title>像素世界</title>
     <style>
 ${css}
     </style>
@@ -57,7 +57,7 @@ ${css}
           <span class="brand-mark"></span>
           <span>Voxel First Day</span>
         </div>
-        <h1>体素沙盒原型</h1>
+        <h1>像素世界</h1>
         <p>探索一座程序生成的小岛，挖掉方块，放上自己设计的体素材质。</p>
         <div class="menu-actions">
           <button id="start-button" type="button">进入世界</button>
@@ -70,7 +70,7 @@ ${css}
           <span>右键放置</span>
           <span>1-7 选方块</span>
         </div>
-        <span class="version-label">TEST 0.8</span>
+        <span class="version-label">0.8</span>
       </section>
     </main>
     <script type="module">
