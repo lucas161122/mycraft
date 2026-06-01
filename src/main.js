@@ -13,7 +13,9 @@ const HALF_WORLD = WORLD_SIZE / 2;
 const WORLD_DEPTH = 18;
 const MIN_WORLD_Y = -WORLD_DEPTH;
 const MAX_WORLD_Y = 40;
+const RESPAWN_Y = -50;
 const BEACH_HEIGHT = 7;
+const COAL_VEIN_SPACING = 12;
 const PLAYER_HEIGHT = 1.72;
 const PLAYER_RADIUS = 0.28;
 const JUMP_SPEED = 8.2;
@@ -93,21 +95,23 @@ const faces = [
 ];
 
 const blockTypes = [
-  { id: 1, name: "草方块", key: "grass", top: "#79b84a", side: "#6f9145", bottom: "#744d2f" },
+  { id: 1, name: "草方块", key: "grass", top: "#6eae3d", side: "#855832", bottom: "#744d2f" },
   { id: 2, name: "泥土", key: "dirt", top: "#8b5a34", side: "#77492d", bottom: "#5f3b27" },
   { id: 3, name: "石头", key: "stone", top: "#92989b", side: "#777f83", bottom: "#62696d" },
   { id: 4, name: "沙子", key: "sand", top: "#d9c679", side: "#c4ad62", bottom: "#a88f4d" },
   { id: 5, name: "树干", key: "wood", top: "#b9854e", side: "#6b3a1f", bottom: "#8f552d" },
-  { id: 6, name: "树叶", key: "leaves", top: "#3f9b58", side: "#327f48", bottom: "#28683b" }
+  { id: 6, name: "树叶", key: "leaves", top: "#3f9b58", side: "#327f48", bottom: "#28683b" },
+  { id: 7, name: "仙人掌", key: "cactus", top: "#58a84a", side: "#438f3f", bottom: "#347936" },
+  { id: 8, name: "煤矿", key: "coal", top: "#777d7f", side: "#666c6e", bottom: "#555b5d" }
 ];
 
-const emptyHotbarItem = { id: 0, name: "空物品栏", key: "empty", empty: true };
-const hotbarItems = [...blockTypes, emptyHotbarItem];
 const allBlocks = [...blockTypes];
 const blockById = new Map(allBlocks.map((block) => [block.id, block]));
-const solidIds = new Set([1, 2, 3, 4, 5, 6]);
+const hotbarItems = [1, 2, 3, 8, 5, 6, 4, 7].map((id) => blockById.get(id));
+const solidIds = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
 const world = new Map();
 const treePositions = [];
+const cactusPositions = [];
 const keys = new Set();
 let selectedBlock = 1;
 let yaw = 0;
@@ -200,7 +204,7 @@ document.addEventListener("keydown", (event) => {
   }
 
   keys.add(event.code);
-  if (/^Digit[1-7]$/.test(event.code)) {
+  if (/^Digit[1-8]$/.test(event.code)) {
     selectedBlock = hotbarItems[Number(event.code.at(-1)) - 1].id;
     updateHotbar();
   }
@@ -225,7 +229,7 @@ document.addEventListener("mousedown", (event) => {
   }
   if (event.button === 2) {
     const place = selectedTarget.place;
-    if (selectedBlock !== 0 && !playerIntersectsBlock(place.x, place.y, place.z)) {
+    if (selectedBlock !== 0 && canPlaceBlock(place.x, place.y, place.z, selectedBlock) && !playerIntersectsBlock(place.x, place.y, place.z)) {
       setBlock(place.x, place.y, place.z, selectedBlock);
     }
   }
@@ -292,6 +296,7 @@ function closeGamePage() {
 function startNewWorld() {
   world.clear();
   treePositions.length = 0;
+  cactusPositions.length = 0;
   selectedTarget = null;
   selector.visible = false;
   selectedBlock = 1;
@@ -327,7 +332,7 @@ function updatePlayer(dt) {
   const slowedVerticalStep = keys.has("Space") && velocity.y < 0 ? verticalStep * FALL_SLOWDOWN_FACTOR : verticalStep;
   tryMove(0, slowedVerticalStep, 0);
 
-  if (camera.position.y < MIN_WORLD_Y - 8) {
+  if (camera.position.y < RESPAWN_Y) {
     placePlayerAtSpawn();
     rebuildWorldMesh();
     velocity.set(0, 0, 0);
@@ -447,8 +452,20 @@ function generateWorld() {
         treePositions.push({ x, z });
       }
 
+      if (
+        height <= BEACH_HEIGHT &&
+        getBlock(x, height, z) === 4 &&
+        hash2d(x + 203, z - 137) > 0.985 &&
+        canPlantCactus(x, z)
+      ) {
+        addCactus(x, height + 1, z);
+        cactusPositions.push({ x, z });
+      }
+
     }
   }
+
+  generateCoalDeposits();
 }
 
 function placePlayerAtSpawn() {
@@ -535,6 +552,69 @@ function addTree(x, y, z) {
 
 function canPlantTree(x, z) {
   return treePositions.every((tree) => Math.hypot(tree.x - x, tree.z - z) >= 5);
+}
+
+function addCactus(x, y, z) {
+  const heightRoll = hash2d(x - 73, z + 181);
+  const height = heightRoll < 0.25 ? 1 : heightRoll < 0.5 ? 2 : 3;
+  for (let i = 0; i < height; i += 1) setBlockRaw(x, y + i, z, 7);
+}
+
+function canPlantCactus(x, z) {
+  return cactusPositions.every((cactus) => Math.hypot(cactus.x - x, cactus.z - z) >= 5);
+}
+
+function generateCoalDeposits() {
+  const edge = Math.floor(HALF_WORLD / COAL_VEIN_SPACING) * COAL_VEIN_SPACING;
+  for (let x = -edge; x <= edge; x += COAL_VEIN_SPACING) {
+    for (let z = -edge; z <= edge; z += COAL_VEIN_SPACING) {
+      const depthRange = -3 - (MIN_WORLD_Y + 3);
+      const y = MIN_WORLD_Y + 3 + Math.floor(hash2d(x + 409, z - 277) * depthRange);
+      addCoalVein(x, y, z);
+    }
+  }
+}
+
+function addCoalVein(x, y, z) {
+  const offsets = [
+    [0, 0, 0],
+    [1, 0, 0],
+    [0, 0, 1],
+    [-1, 0, 0],
+    [0, 0, -1],
+    [0, 1, 0],
+    [1, 1, 0],
+    [0, -1, 0],
+    [-1, 0, 1],
+    [1, 0, -1]
+  ];
+  const blockCount = 5 + Math.floor(hash2d(x - 311, z + 563) * 6);
+  const rotation = Math.floor(hash2d(x + 71, z - 193) * 4);
+
+  for (const [offsetX, offsetY, offsetZ] of offsets.slice(0, blockCount)) {
+    const [rotatedX, rotatedZ] = rotateQuarterTurn(offsetX, offsetZ, rotation);
+    const blockX = x + rotatedX;
+    const blockY = y + offsetY;
+    const blockZ = z + rotatedZ;
+    if (blockY < 0 && getBlock(blockX, blockY, blockZ) === 3) {
+      setBlockRaw(blockX, blockY, blockZ, 8);
+    }
+  }
+}
+
+function rotateQuarterTurn(x, z, rotation) {
+  if (rotation === 1) return [-z, x];
+  if (rotation === 2) return [-x, -z];
+  if (rotation === 3) return [z, -x];
+  return [x, z];
+}
+
+function canPlaceBlock(x, y, z, id) {
+  if (id !== 7) return true;
+
+  let supportY = y - 1;
+  while (getBlock(x, supportY, z) === 7) supportY -= 1;
+  return getBlock(x, supportY, z) === 4;
 }
 
 function setBlock(x, y, z, id) {
@@ -651,18 +731,53 @@ function makeVoxelTexture(baseColor, key, face) {
   ctx.fillStyle = baseColor;
   ctx.fillRect(0, 0, size, size);
 
-  for (let y = 0; y < size; y += 4) {
-    for (let x = 0; x < size; x += 4) {
+  for (let y = 0; y < size; y += 2) {
+    for (let x = 0; x < size; x += 2) {
       const value = hash2d(x + key.length * 11, y + face.length * 17);
-      const patch = color.clone().offsetHSL(0, 0, (value - 0.5) * 0.22);
+      const patch = color.clone().offsetHSL(0, 0, (value - 0.5) * 0.18);
       ctx.fillStyle = `#${patch.getHexString()}`;
-      ctx.fillRect(x, y, 4, 4);
+      ctx.fillRect(x, y, 2, 2);
+    }
+  }
+
+  if (key === "dirt" || (key === "grass" && face !== "top")) {
+    const dirtTones =
+      face === "bottom"
+        ? ["#5e3b27", "#6b4329", "#795033", "#533421"]
+        : ["#75472c", "#855435", "#93613b", "#684027", "#9b6740"];
+    for (let y = 0; y < size; y += 2) {
+      for (let x = 0; x < size; x += 2) {
+        const value = hash2d(x + face.length * 29, y + key.length * 37);
+        ctx.fillStyle = dirtTones[Math.floor(value * dirtTones.length) % dirtTones.length];
+        ctx.fillRect(x, y, 2, 2);
+      }
+    }
+  }
+
+  if (key === "grass" && face === "top") {
+    const grassTones = ["#5f9d35", "#78ba43", "#4f8e31", "#87c64b"];
+    for (let y = 0; y < size; y += 2) {
+      for (let x = 0; x < size; x += 2) {
+        const value = hash2d(x + 83, y - 41);
+        if (value < 0.42) continue;
+        ctx.fillStyle = grassTones[Math.floor(value * grassTones.length) % grassTones.length];
+        ctx.fillRect(x, y, 2, 2);
+      }
     }
   }
 
   if (key === "grass" && face === "side") {
-    ctx.fillStyle = "#7fc24b";
-    for (let x = 0; x < size; x += 4) ctx.fillRect(x, 0, 4, 6 + (x % 3) * 2);
+    const fringeDepths = [7, 5, 9, 6, 11, 7, 5, 9];
+    ctx.fillStyle = "#70b33e";
+    ctx.fillRect(0, 0, size, 5);
+    for (let x = 0; x < size; x += 4) {
+      ctx.fillStyle = x % 8 === 0 ? "#65a538" : "#7bbb42";
+      ctx.fillRect(x, 4, 4, fringeDepths[x / 4] - 4);
+    }
+    ctx.fillStyle = "#5b9633";
+    ctx.fillRect(2, 8, 2, 3);
+    ctx.fillRect(14, 7, 2, 4);
+    ctx.fillRect(26, 8, 2, 3);
   }
 
   if (key === "wood" && face === "side") {
@@ -682,6 +797,12 @@ function makeVoxelTexture(baseColor, key, face) {
     ctx.fillStyle = "#a86836";
     ctx.fillRect(8, 5, 5, 2);
     ctx.fillRect(19, 19, 6, 2);
+    ctx.fillStyle = "#8a4d29";
+    for (let y = 3; y < size; y += 6) {
+      ctx.fillRect(6, y, 2, 2);
+      ctx.fillRect(16, y + 2, 2, 2);
+      ctx.fillRect(26, y - 1, 2, 2);
+    }
   }
 
   if (key === "wood" && face !== "side") {
@@ -689,6 +810,12 @@ function makeVoxelTexture(baseColor, key, face) {
     ctx.fillRect(0, 0, size, size);
     ctx.fillStyle = "#d09a60";
     ctx.fillRect(4, 4, 24, 24);
+    ctx.fillStyle = "#a96f3d";
+    for (let y = 2; y < size; y += 4) {
+      for (let x = 2; x < size; x += 4) {
+        if (hash2d(x + 117, y - 63) > 0.46) ctx.fillRect(x, y, 2, 2);
+      }
+    }
     ctx.strokeStyle = "#6d3d21";
     ctx.lineWidth = 2;
     for (let radius = 5; radius <= 13; radius += 4) {
@@ -698,6 +825,57 @@ function makeVoxelTexture(baseColor, key, face) {
     }
     ctx.fillStyle = "#5a301b";
     ctx.fillRect(15, 15, 3, 3);
+  }
+
+  if (key === "cactus" && face === "side") {
+    ctx.fillStyle = "#347d36";
+    for (let x = 2; x < size; x += 8) ctx.fillRect(x, 0, 2, size);
+    ctx.fillStyle = "#69b957";
+    for (let x = 5; x < size; x += 8) ctx.fillRect(x, 0, 2, size);
+    ctx.fillStyle = "#d4df91";
+    for (let y = 5; y < size; y += 9) {
+      ctx.fillRect(11, y, 1, 2);
+      ctx.fillRect(27, y + 3, 1, 2);
+    }
+  }
+
+  if (key === "cactus" && face !== "side") {
+    ctx.fillStyle = "#347d36";
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = "#69b957";
+    ctx.fillRect(4, 4, 24, 24);
+    ctx.fillStyle = "#438f3f";
+    ctx.fillRect(8, 8, 16, 16);
+    ctx.fillStyle = "#80c567";
+    ctx.fillRect(12, 12, 8, 8);
+    ctx.fillStyle = "#58a84a";
+    for (let y = 2; y < size; y += 4) {
+      for (let x = 2; x < size; x += 4) {
+        if (hash2d(x - 91, y + 44) > 0.56) ctx.fillRect(x, y, 2, 2);
+      }
+    }
+  }
+
+  if (key === "coal") {
+    const coalClusters = [
+      [6, 7],
+      [15, 5],
+      [22, 10],
+      [10, 16],
+      [19, 20],
+      [7, 24]
+    ];
+    for (const [x, y] of coalClusters) {
+      ctx.fillStyle = "#4a4f50";
+      ctx.fillRect(x, y, 4, 2);
+      ctx.fillRect(x + 2, y + 2, 4, 2);
+      ctx.fillStyle = "#303435";
+      ctx.fillRect(x, y + 2, 2, 2);
+      ctx.fillRect(x + 4, y + 4, 2, 2);
+      ctx.fillStyle = "#191c1d";
+      ctx.fillRect(x + 2, y + 2, 2, 2);
+      if ((x + y) % 2 === 0) ctx.fillRect(x + 4, y, 2, 2);
+    }
   }
 
   const texture = new THREE.CanvasTexture(canvasTexture);
@@ -712,14 +890,85 @@ function buildHotbar() {
   hotbarItems.forEach((block, index) => {
     const slot = document.createElement("div");
     slot.className = "slot";
-    slot.classList.toggle("empty", block.empty);
     slot.title = block.name;
-    slot.innerHTML = block.empty ? `<kbd>${index + 1}</kbd>` : `<canvas class="swatch" width="30" height="30"></canvas><kbd>${index + 1}</kbd>`;
+    slot.innerHTML = `<canvas class="swatch" width="44" height="44"></canvas><kbd>${index + 1}</kbd>`;
     const swatch = slot.querySelector("canvas");
-    if (swatch) swatch.getContext("2d").drawImage(materials.get(`${block.key}-top`).map.image, 0, 0, 30, 30);
+    if (swatch) drawHotbarBlockIcon(swatch, block.key);
     hotbar.append(slot);
   });
   updateHotbar();
+}
+
+function drawHotbarBlockIcon(swatch, key) {
+  const ctx = swatch.getContext("2d");
+  const topTexture = materials.get(`${key}-top`).map.image;
+  const sideTexture = materials.get(`${key}-side`).map.image;
+  const top = [
+    [22, 3],
+    [40, 12],
+    [22, 21],
+    [4, 12]
+  ];
+  const left = [
+    [4, 12],
+    [22, 21],
+    [22, 41],
+    [4, 32]
+  ];
+  const right = [
+    [22, 21],
+    [40, 12],
+    [40, 32],
+    [22, 41]
+  ];
+
+  ctx.clearRect(0, 0, swatch.width, swatch.height);
+  drawHotbarIconFace(ctx, sideTexture, left, "rgba(0, 0, 0, 0.2)");
+  drawHotbarIconFace(ctx, sideTexture, right, "rgba(0, 0, 0, 0.06)");
+  drawHotbarIconFace(ctx, topTexture, top);
+}
+
+function drawHotbarIconFace(ctx, texture, corners, shade = "") {
+  const [topLeft, topRight, bottomRight, bottomLeft] = corners;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(topLeft[0], topLeft[1]);
+  ctx.lineTo(topRight[0], topRight[1]);
+  ctx.lineTo(bottomRight[0], bottomRight[1]);
+  ctx.lineTo(bottomLeft[0], bottomLeft[1]);
+  ctx.closePath();
+  ctx.clip();
+  ctx.setTransform(
+    (topRight[0] - topLeft[0]) / texture.width,
+    (topRight[1] - topLeft[1]) / texture.width,
+    (bottomLeft[0] - topLeft[0]) / texture.height,
+    (bottomLeft[1] - topLeft[1]) / texture.height,
+    topLeft[0],
+    topLeft[1]
+  );
+  ctx.drawImage(texture, 0, 0);
+  ctx.restore();
+
+  if (shade) {
+    ctx.fillStyle = shade;
+    ctx.beginPath();
+    ctx.moveTo(topLeft[0], topLeft[1]);
+    ctx.lineTo(topRight[0], topRight[1]);
+    ctx.lineTo(bottomRight[0], bottomRight[1]);
+    ctx.lineTo(bottomLeft[0], bottomLeft[1]);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.strokeStyle = "rgba(16, 24, 20, 0.62)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(topLeft[0] + 0.5, topLeft[1] + 0.5);
+  ctx.lineTo(topRight[0] + 0.5, topRight[1] + 0.5);
+  ctx.lineTo(bottomRight[0] + 0.5, bottomRight[1] + 0.5);
+  ctx.lineTo(bottomLeft[0] + 0.5, bottomLeft[1] + 0.5);
+  ctx.closePath();
+  ctx.stroke();
 }
 
 function updateHotbar() {

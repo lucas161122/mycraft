@@ -68,9 +68,9 @@ ${css}
           <span>空格跳跃</span>
           <span>左键挖掘</span>
           <span>右键放置</span>
-          <span>1-7 选方块</span>
+          <span>1-8 选方块</span>
         </div>
-        <span class="version-label">0.8</span>
+        <span class="version-label">0.9</span>
       </section>
     </main>
     <script type="module">
