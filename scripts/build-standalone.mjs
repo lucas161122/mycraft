@@ -4,10 +4,11 @@ import { join } from "node:path";
 const root = join(import.meta.dirname, "..");
 const outputPath = join(root, "Craft Game.html");
 
-const [css, threeModule, mainJs] = await Promise.all([
+const [css, threeModule, mainJs, pigSkin] = await Promise.all([
   readFile(join(root, "src/styles.css"), "utf8"),
   readFile(join(root, "src/vendor/three.module.js"), "utf8"),
-  readFile(join(root, "src/main.js"), "utf8")
+  readFile(join(root, "src/main.js"), "utf8"),
+  readFile(join(root, "src/assets/pig.png"))
 ]);
 
 const exportMatch = threeModule.match(/export\s+\{([\s\S]*?)\};\s*$/);
@@ -24,7 +25,10 @@ const threeExports = exportMatch[1]
     return aliasMatch ? `${aliasMatch[2]}: ${aliasMatch[1]}` : entry;
   });
 
-const bundledMain = mainJs.replace('import * as THREE from "./vendor/three.module.js";\n\n', "");
+const pigSkinDataUrl = `data:image/png;base64,${pigSkin.toString("base64")}`;
+const bundledMain = mainJs
+  .replace('import * as THREE from "./vendor/three.module.js";\n\n', "")
+  .replace('"/src/assets/pig.png"', JSON.stringify(pigSkinDataUrl));
 
 const html = `<!doctype html>
 <html lang="zh-CN">
@@ -65,12 +69,12 @@ ${css}
         </div>
         <div class="controls">
           <span>WASD 移动</span>
-          <span>空格跳跃</span>
+          <span>空格跳跃 / 双击飞行</span>
           <span>左键挖掘</span>
           <span>右键放置</span>
           <span>1-8 选方块</span>
         </div>
-        <span class="version-label">0.9</span>
+        <span class="version-label">0.3</span>
       </section>
     </main>
     <script type="module">

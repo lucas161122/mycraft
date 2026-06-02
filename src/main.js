@@ -21,6 +21,16 @@ const PLAYER_RADIUS = 0.28;
 const JUMP_SPEED = 8.2;
 const FALL_SLOWDOWN_FACTOR = 0.75;
 const GRAVITY = 24;
+const FLY_SPEED = 8;
+const MAX_FLIGHT_Y = 100;
+const DOUBLE_SPACE_WINDOW_MS = 320;
+const PIG_COUNT = 12;
+const PIG_RADIUS = 0.45;
+const PIG_HEIGHT = 0.9;
+const PIG_FRONT_CLEARANCE = 0.7;
+const PIG_SPEED = 1.35;
+const PIG_JUMP_SPEED = 6.5;
+const PIG_GRAVITY = 18;
 const SPAWN_CLEAR_RADIUS = 10;
 const SPAWN_TREE_FREE_RADIUS = 15;
 const SPAWN_POINTS = [
@@ -112,11 +122,15 @@ const solidIds = new Set([1, 2, 3, 4, 5, 6, 7, 8]);
 const world = new Map();
 const treePositions = [];
 const cactusPositions = [];
+const pigs = [];
+const pigWalkableIds = new Set([1, 2, 3, 4]);
 const keys = new Set();
 let selectedBlock = 1;
 let yaw = 0;
 let pitch = 0;
 let grounded = false;
+let flying = false;
+let lastSpacePressAt = -Infinity;
 let gameActive = false;
 let menuMode = "title";
 let draggingLook = false;
@@ -154,8 +168,11 @@ selector.visible = false;
 scene.add(selector);
 
 const materials = createMaterials();
+const pigMaterials = createPigMaterials(loadPigSkinTexture());
 const worldGroup = new THREE.Group();
 scene.add(worldGroup);
+const pigGroup = new THREE.Group();
+scene.add(pigGroup);
 
 const raycaster = new THREE.Raycaster();
 raycaster.far = 6;
@@ -208,8 +225,8 @@ document.addEventListener("keydown", (event) => {
     selectedBlock = hotbarItems[Number(event.code.at(-1)) - 1].id;
     updateHotbar();
   }
-  if (event.code === "Space" && grounded) {
-    jump();
+  if (event.code === "Space" && !event.repeat) {
+    handleSpacePress();
   }
   if (event.code === "Escape" && document.pointerLockElement !== canvas) {
     pauseGame();
@@ -229,7 +246,12 @@ document.addEventListener("mousedown", (event) => {
   }
   if (event.button === 2) {
     const place = selectedTarget.place;
-    if (selectedBlock !== 0 && canPlaceBlock(place.x, place.y, place.z, selectedBlock) && !playerIntersectsBlock(place.x, place.y, place.z)) {
+    if (
+      selectedBlock !== 0 &&
+      canPlaceBlock(place.x, place.y, place.z, selectedBlock) &&
+      !playerIntersectsBlock(place.x, place.y, place.z) &&
+      !pigIntersectsBlock(place.x, place.y, place.z)
+    ) {
       setBlock(place.x, place.y, place.z, selectedBlock);
     }
   }
@@ -252,6 +274,7 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.04);
   if (gameActive) {
     updatePlayer(dt);
+    updatePigs(dt);
     updateSelection();
   }
   renderer.render(scene, camera);
@@ -297,11 +320,15 @@ function startNewWorld() {
   world.clear();
   treePositions.length = 0;
   cactusPositions.length = 0;
+  clearPigs();
   selectedTarget = null;
   selector.visible = false;
   selectedBlock = 1;
+  flying = false;
+  lastSpacePressAt = -Infinity;
   generateWorld();
   placePlayerAtSpawn();
+  spawnPigs();
   rebuildWorldMesh();
   updateHotbar();
   updatePositionLabel();
@@ -322,15 +349,24 @@ function updatePlayer(dt) {
   if (keys.has("KeyA")) move.sub(right);
   if (move.lengthSq() > 0) move.normalize();
 
-  const speed = keys.has("ShiftLeft") ? 9.5 : 6.2;
+  const shiftPressed = keys.has("ShiftLeft") || keys.has("ShiftRight");
+  const speed = !flying && shiftPressed ? 9.5 : 6.2;
   const horizontal = move.multiplyScalar(speed * dt);
   tryMove(horizontal.x, 0, 0);
   tryMove(0, 0, horizontal.z);
 
-  velocity.y -= GRAVITY * dt;
-  const verticalStep = velocity.y * dt;
-  const slowedVerticalStep = keys.has("Space") && velocity.y < 0 ? verticalStep * FALL_SLOWDOWN_FACTOR : verticalStep;
-  tryMove(0, slowedVerticalStep, 0);
+  if (flying) {
+    velocity.y = 0;
+    const verticalDirection = Number(keys.has("Space")) - Number(shiftPressed);
+    const verticalStep = verticalDirection * FLY_SPEED * dt;
+    const cappedVerticalStep = verticalStep > 0 ? Math.min(verticalStep, MAX_FLIGHT_Y - camera.position.y) : verticalStep;
+    tryMove(0, cappedVerticalStep, 0);
+  } else {
+    velocity.y -= GRAVITY * dt;
+    const verticalStep = velocity.y * dt;
+    const slowedVerticalStep = keys.has("Space") && velocity.y < 0 ? verticalStep * FALL_SLOWDOWN_FACTOR : verticalStep;
+    tryMove(0, slowedVerticalStep, 0);
+  }
 
   if (camera.position.y < RESPAWN_Y) {
     placePlayerAtSpawn();
@@ -347,23 +383,48 @@ function updatePositionLabel() {
 
 function tryMove(dx, dy, dz) {
   if (dx === 0 && dy === 0 && dz === 0) return true;
-  const old = camera.position.clone();
-  camera.position.x += dx;
-  camera.position.y += dy;
-  camera.position.z += dz;
-  if (collidesWithWorld()) {
-    camera.position.copy(old);
-    if (dy < 0) grounded = true;
-    if (dy !== 0) velocity.y = 0;
-    return false;
-  } else if (dy !== 0) {
-    grounded = false;
+  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz)) / 0.1));
+  const stepX = dx / steps;
+  const stepY = dy / steps;
+  const stepZ = dz / steps;
+
+  for (let step = 0; step < steps; step += 1) {
+    const old = camera.position.clone();
+    camera.position.x += stepX;
+    camera.position.y += stepY;
+    camera.position.z += stepZ;
+    if (collidesWithWorld() || collidesWithPig()) {
+      camera.position.copy(old);
+      if (dy < 0) grounded = true;
+      if (dy !== 0) velocity.y = 0;
+      return false;
+    }
   }
+
+  if (dy !== 0) grounded = false;
   return true;
 }
 
 function jump() {
   velocity.y = JUMP_SPEED;
+  grounded = false;
+}
+
+function handleSpacePress() {
+  const now = performance.now();
+  if (now - lastSpacePressAt <= DOUBLE_SPACE_WINDOW_MS) {
+    setFlying(!flying);
+    lastSpacePressAt = -Infinity;
+    return;
+  }
+
+  lastSpacePressAt = now;
+  if (!flying && grounded) jump();
+}
+
+function setFlying(enabled) {
+  flying = enabled;
+  velocity.y = 0;
   grounded = false;
 }
 
@@ -394,6 +455,34 @@ function playerIntersectsBlock(x, y, z) {
     z + 1 > camera.position.z - PLAYER_RADIUS &&
     z < camera.position.z + PLAYER_RADIUS
   );
+}
+
+function collidesWithPig(position = camera.position) {
+  const playerMinY = position.y - PLAYER_HEIGHT;
+  const playerMaxY = position.y;
+  return pigs.some((pig) => {
+    const pigPosition = pig.root.position;
+    return (
+      Math.abs(pigPosition.x - position.x) < PIG_RADIUS + PLAYER_RADIUS &&
+      Math.abs(pigPosition.z - position.z) < PIG_RADIUS + PLAYER_RADIUS &&
+      pigPosition.y + PIG_HEIGHT > playerMinY &&
+      pigPosition.y < playerMaxY
+    );
+  });
+}
+
+function pigIntersectsBlock(x, y, z) {
+  return pigs.some((pig) => {
+    const position = pig.root.position;
+    return (
+      x + 1 > position.x - PIG_RADIUS &&
+      x < position.x + PIG_RADIUS &&
+      y + 1 > position.y &&
+      y < position.y + PIG_HEIGHT &&
+      z + 1 > position.z - PIG_RADIUS &&
+      z < position.z + PIG_RADIUS
+    );
+  });
 }
 
 function updateSelection() {
@@ -476,6 +565,8 @@ function placePlayerAtSpawn() {
   camera.position.copy(spawnPoint.position);
   velocity.set(0, 0, 0);
   grounded = true;
+  flying = false;
+  lastSpacePressAt = -Infinity;
   yaw = -Math.PI / 2;
 }
 
@@ -516,6 +607,240 @@ function clearSpawnArea(x, groundY, z) {
 
 function isInsideWorld(x, z) {
   return x >= -HALF_WORLD && x < HALF_WORLD && z >= -HALF_WORLD && z < HALF_WORLD;
+}
+
+function clearPigs() {
+  pigs.length = 0;
+  pigGroup.clear();
+}
+
+function spawnPigs() {
+  const candidates = [];
+  for (let x = -HALF_WORLD + 2; x < HALF_WORLD - 2; x += 2) {
+    for (let z = -HALF_WORLD + 2; z < HALF_WORLD - 2; z += 2) {
+      const centerX = x + 0.5;
+      const centerZ = z + 0.5;
+      const groundY = findPigSurfaceY(centerX, centerZ, MAX_WORLD_Y);
+      if (groundY === null) continue;
+      if (pigCollidesWithWorld(centerX, groundY, centerZ)) continue;
+
+      candidates.push({
+        x: centerX,
+        y: groundY,
+        z: centerZ,
+        score: hash2d(x + 617, z - 283)
+      });
+    }
+  }
+
+  candidates.sort((a, b) => a.score - b.score);
+  for (const candidate of candidates) {
+    if (pigs.length >= PIG_COUNT) break;
+    if (pigs.some((pig) => Math.hypot(pig.root.position.x - candidate.x, pig.root.position.z - candidate.z) < 4)) continue;
+    pigs.push(createPig(candidate.x, candidate.y, candidate.z));
+  }
+}
+
+function createPig(x, y, z) {
+  const root = new THREE.Group();
+  const legs = [];
+
+  addPigPart(root, [0.625, 1, 0.5], [0, 0.625, 0], pigMaterials.body, [Math.PI / 2, 0, 0]);
+  addPigPart(root, [0.5, 0.5, 0.5], [0, 0.625, -0.625], pigMaterials.head);
+  addPigPart(root, [0.25, 0.1875, 0.0625], [0, 0.59, -0.90625], pigMaterials.snout);
+  addPigPart(root, [0.0625, 0.0625, 0.03125], [-0.15625, 0.71875, -0.890625], pigMaterials.eye);
+  addPigPart(root, [0.0625, 0.0625, 0.03125], [0.15625, 0.71875, -0.890625], pigMaterials.eye);
+
+  for (const [legX, legZ] of [
+    [-0.1875, -0.3125],
+    [0.1875, -0.3125],
+    [-0.1875, 0.3125],
+    [0.1875, 0.3125]
+  ]) {
+    const leg = addPigPart(root, [0.25, 0.375, 0.25], [legX, 0.1875, legZ], pigMaterials.leg);
+    legs.push(leg);
+  }
+
+  const direction = hash2d(x + 41, z - 97) * Math.PI * 2;
+  root.position.set(x, y, z);
+  root.rotation.y = direction;
+  pigGroup.add(root);
+
+  return {
+    root,
+    legs,
+    direction,
+    grounded: true,
+    verticalVelocity: 0,
+    walkTime: hash2d(x - 19, z + 71) * Math.PI * 2,
+    turnTimer: 1.6 + hash2d(x + 83, z - 11) * 3.6
+  };
+}
+
+function addPigPart(root, size, position, material, rotation = [0, 0, 0]) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
+  mesh.position.set(...position);
+  mesh.rotation.set(...rotation);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  root.add(mesh);
+  return mesh;
+}
+
+function updatePigs(dt) {
+  for (const pig of pigs) {
+    pig.turnTimer -= dt;
+    if (pig.turnTimer <= 0) {
+      pig.direction += (hash2d(pig.root.position.x + pig.walkTime, pig.root.position.z - pig.walkTime) - 0.5) * Math.PI;
+      pig.turnTimer = 1.8 + hash2d(pig.root.position.z + 37, pig.root.position.x - 53) * 3.8;
+    }
+
+    updatePigVertical(pig, dt);
+
+    const stepX = -Math.sin(pig.direction) * PIG_SPEED * dt;
+    const stepZ = -Math.cos(pig.direction) * PIG_SPEED * dt;
+    if (!tryMovePig(pig, stepX, stepZ)) turnPigAround(pig);
+
+    pig.root.rotation.y = pig.direction;
+    pig.walkTime += dt * 8;
+    const legSwing = pig.grounded ? Math.sin(pig.walkTime) * 0.44 : 0.18;
+    pig.legs.forEach((leg, index) => {
+      leg.rotation.x = index % 2 === 0 ? legSwing : -legSwing;
+    });
+  }
+}
+
+function updatePigVertical(pig, dt) {
+  if (pig.grounded) return;
+
+  pig.verticalVelocity -= PIG_GRAVITY * dt;
+  const nextY = pig.root.position.y + pig.verticalVelocity * dt;
+  const groundY = findPigSurfaceY(pig.root.position.x, pig.root.position.z, pig.root.position.y);
+
+  if (pig.verticalVelocity <= 0 && groundY !== null && nextY <= groundY) {
+    pig.root.position.y = groundY;
+    pig.verticalVelocity = 0;
+    pig.grounded = true;
+    return;
+  }
+
+  pig.root.position.y = nextY;
+  if (pig.root.position.y < RESPAWN_Y) respawnPig(pig);
+}
+
+function tryMovePig(pig, dx, dz) {
+  const nextX = pig.root.position.x + dx;
+  const nextZ = pig.root.position.z + dz;
+  const currentY = pig.root.position.y;
+  const stepLength = Math.hypot(dx, dz);
+  const forwardX = stepLength ? dx / stepLength : 0;
+  const forwardZ = stepLength ? dz / stepLength : 0;
+  const probeX = nextX + forwardX * PIG_FRONT_CLEARANCE;
+  const probeZ = nextZ + forwardZ * PIG_FRONT_CLEARANCE;
+  const probeGroundY = findPigSurfaceY(probeX, probeZ, currentY);
+  const nextGroundY = findPigSurfaceY(nextX, nextZ, currentY);
+
+  if (
+    probeGroundY === null ||
+    nextGroundY === null ||
+    probeGroundY < currentY - 1.05 ||
+    probeGroundY > currentY + 1.05 ||
+    nextGroundY < currentY - 1.05 ||
+    nextGroundY > currentY + 1.05
+  ) {
+    return false;
+  }
+
+  const climbingOneBlock = probeGroundY > currentY + 0.08;
+  if (climbingOneBlock) {
+    if (pigCollidesWithWorld(probeX, probeGroundY, probeZ)) return false;
+    if (pig.grounded) {
+      pig.verticalVelocity = PIG_JUMP_SPEED;
+      pig.grounded = false;
+    }
+  }
+
+  if (pigCollidesWithWorld(nextX, currentY, nextZ)) return climbingOneBlock;
+  if (pigIntersectsPlayer(nextX, currentY, nextZ)) return false;
+  if (pigs.some((other) => other !== pig && Math.hypot(other.root.position.x - nextX, other.root.position.z - nextZ) < PIG_RADIUS * 2)) {
+    return false;
+  }
+
+  pig.root.position.x = nextX;
+  pig.root.position.z = nextZ;
+  if (pig.grounded && nextGroundY < currentY - 0.08) pig.grounded = false;
+  return true;
+}
+
+function pigIntersectsPlayer(x, y, z) {
+  return (
+    Math.abs(camera.position.x - x) < PIG_RADIUS + PLAYER_RADIUS &&
+    Math.abs(camera.position.z - z) < PIG_RADIUS + PLAYER_RADIUS &&
+    camera.position.y > y &&
+    camera.position.y - PLAYER_HEIGHT < y + PIG_HEIGHT
+  );
+}
+
+function findPigSurfaceY(x, z, maxFootY) {
+  const samples = [
+    [0, 0],
+    [-PIG_RADIUS * 0.82, -PIG_RADIUS * 0.82],
+    [PIG_RADIUS * 0.82, -PIG_RADIUS * 0.82],
+    [-PIG_RADIUS * 0.82, PIG_RADIUS * 0.82],
+    [PIG_RADIUS * 0.82, PIG_RADIUS * 0.82]
+  ];
+  const heights = samples.map(([offsetX, offsetZ]) => findPigSurfaceAtPoint(x + offsetX, z + offsetZ, maxFootY));
+  if (heights.some((height) => height === null)) return null;
+
+  const minHeight = Math.min(...heights);
+  const maxHeight = Math.max(...heights);
+  return maxHeight - minHeight <= 1 ? maxHeight : null;
+}
+
+function findPigSurfaceAtPoint(x, z, maxFootY) {
+  const blockX = Math.floor(x);
+  const blockZ = Math.floor(z);
+  if (!isInsideWorld(blockX, blockZ)) return null;
+
+  for (let blockY = Math.min(MAX_WORLD_Y, Math.floor(maxFootY)); blockY >= MIN_WORLD_Y; blockY -= 1) {
+    const id = getBlock(blockX, blockY, blockZ);
+    if (!id) continue;
+    return pigWalkableIds.has(id) ? blockY + 1 : null;
+  }
+
+  return null;
+}
+
+function pigCollidesWithWorld(x, y, z) {
+  const minX = Math.floor(x - PIG_RADIUS);
+  const maxX = Math.floor(x + PIG_RADIUS);
+  const minY = Math.floor(y + 0.02);
+  const maxY = Math.floor(y + PIG_HEIGHT - 0.02);
+  const minZ = Math.floor(z - PIG_RADIUS);
+  const maxZ = Math.floor(z + PIG_RADIUS);
+
+  for (let blockX = minX; blockX <= maxX; blockX += 1) {
+    for (let blockY = minY; blockY <= maxY; blockY += 1) {
+      for (let blockZ = minZ; blockZ <= maxZ; blockZ += 1) {
+        if (isSolid(blockX, blockY, blockZ)) return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+function turnPigAround(pig) {
+  pig.direction += Math.PI * (0.7 + hash2d(pig.root.position.x + 13, pig.root.position.z - 29) * 0.6);
+  pig.turnTimer = 1.2 + hash2d(pig.root.position.z - 61, pig.root.position.x + 17) * 2.2;
+}
+
+function respawnPig(pig) {
+  const groundY = findPigSurfaceY(camera.position.x, camera.position.z, MAX_WORLD_Y);
+  pig.root.position.set(camera.position.x + 2, groundY ?? 12, camera.position.z + 2);
+  pig.verticalVelocity = 0;
+  pig.grounded = true;
+  turnPigAround(pig);
 }
 
 function addTree(x, y, z) {
@@ -708,6 +1033,46 @@ function createMaterials() {
     result.set(`${block.key}-bottom`, makeMaterial(block.bottom, block.key, "bottom"));
   }
   return result;
+}
+
+function loadPigSkinTexture() {
+  const texture = new THREE.TextureLoader().load("/src/assets/pig.png");
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function createPigMaterials(texture) {
+  return {
+    head: makePigBoxMaterials(texture, 0, 0, 8, 8, 8),
+    snout: makePigBoxMaterials(texture, 16, 16, 4, 3, 1),
+    body: makePigBoxMaterials(texture, 28, 8, 10, 16, 8),
+    leg: makePigBoxMaterials(texture, 0, 16, 4, 6, 4),
+    eye: new THREE.MeshLambertMaterial({ color: 0x231820 })
+  };
+}
+
+function makePigBoxMaterials(texture, u, v, width, height, depth) {
+  return [
+    makePigAtlasMaterial(texture, u + depth + width, v + depth, depth, height),
+    makePigAtlasMaterial(texture, u, v + depth, depth, height),
+    makePigAtlasMaterial(texture, u + depth, v, width, depth),
+    makePigAtlasMaterial(texture, u + depth + width, v, width, depth),
+    makePigAtlasMaterial(texture, u + depth, v + depth, width, height),
+    makePigAtlasMaterial(texture, u + depth + width + depth, v + depth, width, height)
+  ];
+}
+
+function makePigAtlasMaterial(sourceTexture, u, v, width, height) {
+  const texture = sourceTexture.clone();
+  texture.offset.set(u / 64, 1 - (v + height) / 32);
+  texture.repeat.set(width / 64, height / 32);
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return new THREE.MeshLambertMaterial({ map: texture });
 }
 
 function makeMaterial(baseColor, key, face) {
